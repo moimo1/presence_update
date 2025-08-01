@@ -6,22 +6,21 @@ import os
 import json
 from dotenv import load_dotenv
 
-# --- SETUP ---
 load_dotenv()
 
-# Define file paths for our data
+# --- CONSTANTS ---
 DATA_FOLDER = "data"
 PLAY_TIMES_FILE = os.path.join(DATA_FOLDER, "play_times.json")
 LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "leaderboard.json")
 GAME_ROLES_FILE = os.path.join(DATA_FOLDER, "game_roles.json")
-GAME_LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "game_leaderboard.json")  # <-- NEW
+GAME_LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "game_leaderboard.json")
+ANNOUNCEMENT_CHANNEL_NAME = "presence-update"
 
 
 # --- DATA HELPER FUNCTIONS ---
 def setup_data_files():
     """Ensures the data directory and necessary JSON files exist."""
     os.makedirs(DATA_FOLDER, exist_ok=True)
-    # Added the new file to the setup list
     for file_path in [PLAY_TIMES_FILE, LEADERBOARD_FILE, GAME_ROLES_FILE, GAME_LEADERBOARD_FILE]:
         if not os.path.exists(file_path):
             with open(file_path, 'w') as f:
@@ -38,9 +37,23 @@ def load_data(file_path):
 
 
 def save_data(file_path, data):
-    """Saves data to a JSON file."""
+    """Saves data to a JSON file, handling datetime and set objects."""
+    serializable_data = {}
+    if file_path == PLAY_TIMES_FILE:
+        for user_id, user_data in data.items():
+            serializable_data[user_id] = {
+                "start_time": user_data["start_time"].isoformat(),
+                "last_updated": user_data["last_updated"].isoformat(),
+                "game": user_data["game"],
+                "milestones_hit": list(user_data["milestones_hit"]),
+                "guild_id": user_data["guild_id"],
+                "channel_id": user_data["channel_id"]
+            }
+    else:
+        serializable_data = data
+
     with open(file_path, 'w') as f:
-        json.dump(data, f, indent=4)
+        json.dump(serializable_data, f, indent=4)
 
 
 # --- BOT INITIALIZATION ---
@@ -51,21 +64,26 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Load data from files into memory
-playing_start_times = load_data(PLAY_TIMES_FILE)
-# Convert string keys back to int for user IDs
-playing_start_times = {int(k): v for k, v in playing_start_times.items()}
-# Convert ISO string times back to datetime objects
-for user_id, data in playing_start_times.items():
-    data["start_time"] = datetime.datetime.fromisoformat(data["start_time"])
-    # Ensure milestones_hit is a set
-    data["milestones_hit"] = set(data.get("milestones_hit", []))
+# --- DATA LOADING ---
+setup_data_files()
+playing_start_times_raw = load_data(PLAY_TIMES_FILE)
+playing_start_times = {}
+for user_id_str, data in playing_start_times_raw.items():
+    user_id = int(user_id_str)
+    start_time = datetime.datetime.fromisoformat(data["start_time"])
+    playing_start_times[user_id] = {
+        "start_time": start_time,
+        "last_updated": datetime.datetime.fromisoformat(data.get("last_updated", start_time.isoformat())),
+        "game": data["game"],
+        "milestones_hit": set(data.get("milestones_hit", [])),
+        "guild_id": data["guild_id"],
+        "channel_id": data["channel_id"]
+    }
 
 leaderboard_data = load_data(LEADERBOARD_FILE)
 game_roles = load_data(GAME_ROLES_FILE)
-game_leaderboard_data = load_data(GAME_LEADERBOARD_FILE)  # <-- NEW
+game_leaderboard_data = load_data(GAME_LEADERBOARD_FILE)
 
-# Define hour milestones (in minutes) and corresponding messages
 milestone_messages = {
     60: "⏱️ Wow, such dedication! You've been gaming for 1 hour!",
     120: "🎮 What a gamer! You've reached 2 hours!",
@@ -75,14 +93,15 @@ milestone_messages = {
 }
 
 
-# --- HELPER FUNCTIONS ---
-def get_announcement_channel(member):
-    """Finds the designated announcement channel, 'presence-update'."""
-    return discord.utils.get(member.guild.text_channels, name="presence-update")
+# --- CORE HELPER FUNCTIONS ---
+def get_announcement_channel(guild):
+    """Finds the designated announcement channel by name."""
+    return discord.utils.get(guild.text_channels, name=ANNOUNCEMENT_CHANNEL_NAME)
 
 
 def format_duration(seconds):
     """Formats seconds into a human-readable string (Hh Mm Ss)."""
+    if seconds < 0: seconds = 0
     if seconds < 60:
         return f"{int(seconds)}s"
     minutes, seconds = divmod(seconds, 60)
@@ -94,37 +113,31 @@ def format_duration(seconds):
 
 async def update_leaderboard(member, duration_seconds):
     """Updates the user leaderboard with playtime."""
+    if duration_seconds <= 0: return
     guild_id_str = str(member.guild.id)
     user_id_str = str(member.id)
-
     if guild_id_str not in leaderboard_data:
         leaderboard_data[guild_id_str] = {}
-
-    leaderboard_data[guild_id_str][user_id_str] = leaderboard_data[guild_id_str].get(user_id_str, 0) + duration_seconds
+    current_time = leaderboard_data[guild_id_str].get(user_id_str, 0)
+    leaderboard_data[guild_id_str][user_id_str] = current_time + duration_seconds
     save_data(LEADERBOARD_FILE, leaderboard_data)
 
 
-# <-- NEW HELPER FUNCTION ---
 async def update_game_leaderboard(guild, game_name, duration_seconds):
     """Updates the game leaderboard with playtime."""
+    if duration_seconds <= 0: return
     guild_id_str = str(guild.id)
-
     if guild_id_str not in game_leaderboard_data:
         game_leaderboard_data[guild_id_str] = {}
-
-    game_leaderboard_data[guild_id_str][game_name] = game_leaderboard_data[guild_id_str].get(game_name,
-                                                                                             0) + duration_seconds
+    current_time = game_leaderboard_data[guild_id_str].get(game_name, 0)
+    game_leaderboard_data[guild_id_str][game_name] = current_time + duration_seconds
     save_data(GAME_LEADERBOARD_FILE, game_leaderboard_data)
 
-
-# --- END OF NEW HELPER FUNCTION -->
 
 async def handle_game_role(member, game_name, action="add"):
     """Adds or removes a game-specific role from a member."""
     guild_id_str = str(member.guild.id)
-    if guild_id_str not in game_roles or not game_name:
-        return
-
+    if guild_id_str not in game_roles or not game_name: return
     game_name_lower = game_name.lower()
     if game_name_lower in game_roles[guild_id_str]:
         role_id = game_roles[guild_id_str][game_name_lower]
@@ -136,114 +149,182 @@ async def handle_game_role(member, game_name, action="add"):
                 elif action == "remove":
                     await member.remove_roles(role, reason=f"Stopped playing {game_name}")
             except discord.Forbidden:
-                print(
-                    f"Failed to manage role '{role.name}' for {member.name} in '{member.guild.name}'. Missing permissions.")
+                print(f"Error: Bot lacks permissions to manage role '{role.name}' for {member.name}.")
             except discord.HTTPException as e:
-                print(f"An HTTP error occurred while managing roles: {e}")
+                print(f"Error: An HTTP error occurred while managing roles: {e}")
+
+
+# --- ACTIVITY TRACKING LOGIC ---
+async def start_tracking_activity(member, game):
+    """Handles all logic for when a member starts a game."""
+    if member.id in playing_start_times: return
+    channel = get_announcement_channel(member.guild)
+    now = datetime.datetime.now(datetime.UTC)
+
+    playing_start_times[member.id] = {
+        "start_time": now,
+        "last_updated": now,
+        "game": game.name,
+        "milestones_hit": set(),
+        "guild_id": member.guild.id,
+        "channel_id": channel.id if channel else None
+    }
+    save_data(PLAY_TIMES_FILE, playing_start_times)
+    await handle_game_role(member, game.name, action="add")
+    print(f"INFO: Started tracking {member.name} playing {game.name}")
+    if channel:
+        await channel.send(f"🎮 {member.name} started playing **{game.name}**!")
+
+
+async def stop_tracking_activity(member):
+    """Handles all logic for when a member stops a game, returning the session info."""
+    if member.id not in playing_start_times:
+        return None, None
+
+    start_info = playing_start_times.pop(member.id)
+    now = datetime.datetime.now(datetime.UTC)
+
+    # Log the final chunk of time since the last periodic update
+    duration_since_last_update = (now - start_info["last_updated"]).total_seconds()
+    await update_leaderboard(member, duration_since_last_update)
+    await update_game_leaderboard(member.guild, start_info["game"], duration_since_last_update)
+
+    await handle_game_role(member, start_info["game"], action="remove")
+    save_data(PLAY_TIMES_FILE, playing_start_times)
+
+    total_duration = (now - start_info["start_time"]).total_seconds()
+    print(f"INFO: Stopped tracking {member.name}. Total session time: {format_duration(total_duration)}")
+    return start_info, total_duration
 
 
 # --- BOT EVENTS ---
 @bot.event
 async def on_ready():
+    """Called when the bot is ready and connected."""
     print(f"✅ Bot is online as {bot.user}")
+    print("-" * 20)
+
+    # Wait for the internal presence cache to be populated by the gateway.
+    print("⏳ Waiting 10 seconds for presence cache to populate...")
+    await asyncio.sleep(10)
+    print("✅ Cache ready.")
+
+    print("🚀 Performing initial presence scan for ongoing activities...")
+    active_users_found = 0
+    for guild in bot.guilds:
+        # fetch_members is more reliable than guild.members for this purpose.
+        async for member in guild.fetch_members(limit=None):
+            if member.bot:
+                continue
+
+            game_activity = next((a for a in member.activities if a.type == discord.ActivityType.playing), None)
+            if game_activity and member.id not in playing_start_times:
+                print(f"  -> Found {member.name} playing {game_activity.name}. Starting tracking.")
+                await start_tracking_activity(member, game_activity)
+                active_users_found += 1
+
+    print(f"✅ Initial scan complete. Found and started tracking {active_users_found} active users.")
+    print("-" * 20)
+
+    # Start the background tasks
     check_milestones.start()
+    update_leaderboards_periodically.start()
 
 
 @bot.event
 async def on_presence_update(before, after):
-    if after.bot:
-        return
+    if after.bot: return
 
-    channel = get_announcement_channel(after)
+    channel = get_announcement_channel(after.guild)
 
-    if before.status != after.status:
-        if channel:
-            if after.status == discord.Status.online and before.status == discord.Status.offline:
-                await channel.send(f"🟢 {after.mention} just came online.")
-            elif after.status == discord.Status.offline:
-                await channel.send(f"⚫ {after.mention} just went offline.")
+    # Status change announcements (optional, can be commented out)
+    if before.status != after.status and channel:
+        if after.status == discord.Status.online and before.status == discord.Status.offline:
+            await channel.send(f"🟢 {after.mention} just came online.")
+        elif after.status == discord.Status.offline:
+            await channel.send(f"⚫ {after.mention} just went offline.")
 
     before_game = next((a for a in before.activities if a.type == discord.ActivityType.playing), None)
     after_game = next((a for a in after.activities if a.type == discord.ActivityType.playing), None)
 
+    # Case 1: Started playing a game
     if not before_game and after_game:
-        start_time = datetime.datetime.now(datetime.UTC)
-        playing_start_times[after.id] = {
-            "start_time": start_time.isoformat(),
-            "game": after_game.name,
-            "milestones_hit": [],
-            "guild_id": after.guild.id,
-            "channel_id": channel.id if channel else None
-        }
-        save_data(PLAY_TIMES_FILE, playing_start_times)
-        await handle_game_role(after, after_game.name, action="add")
-        if channel:
-            await channel.send(f"🎮 {after.name} started playing **{after_game.name}**!")
-
-    elif (before_game and not after_game) or (before.status != after.status and after.status == discord.Status.offline):
-        if after.id in playing_start_times:
-            start_info = playing_start_times.pop(after.id)
-            start_time = datetime.datetime.fromisoformat(start_info["start_time"])
-            duration = (datetime.datetime.now(datetime.UTC) - start_time).total_seconds()
-
-            # UPDATED: Log time to both leaderboards
-            await update_leaderboard(after, duration)
-            await update_game_leaderboard(after.guild, start_info["game"], duration)
-
-            await handle_game_role(after, start_info["game"], action="remove")
-            save_data(PLAY_TIMES_FILE, playing_start_times)
-            if channel:
-                await channel.send(
-                    f"⏹️ {after.name} stopped playing **{start_info['game']}** after {format_duration(duration)}.")
-
+        await start_tracking_activity(after, after_game)
+    # Case 2: Stopped playing (or went offline while playing)
+    elif (before_game and not after_game) or (before_game and after.status == discord.Status.offline):
+        start_info, duration = await stop_tracking_activity(after)
+        if channel and start_info:
+            await channel.send(
+                f"⏹️ {after.name} stopped playing **{start_info['game']}** after {format_duration(duration)}.")
+    # Case 3: Switched games
     elif before_game and after_game and before_game.name != after_game.name:
-        start_info = playing_start_times.pop(after.id)
-        start_time = datetime.datetime.fromisoformat(start_info["start_time"])
-        duration = (datetime.datetime.now(datetime.UTC) - start_time).total_seconds()
-
-        # UPDATED: Log time for the old game to both leaderboards
-        await update_leaderboard(after, duration)
-        await update_game_leaderboard(after.guild, start_info["game"], duration)
-
-        await handle_game_role(after, before_game.name, action="remove")
-
-        new_start_time = datetime.datetime.now(datetime.UTC)
-        playing_start_times[after.id] = {
-            "start_time": new_start_time.isoformat(),
-            "game": after_game.name,
-            "milestones_hit": [],
-            "guild_id": after.guild.id,
-            "channel_id": channel.id if channel else None
-        }
-        save_data(PLAY_TIMES_FILE, playing_start_times)
-        await handle_game_role(after, after_game.name, action="add")
+        await stop_tracking_activity(after)
+        await start_tracking_activity(after, after_game)
         if channel:
             await channel.send(f"🔄 {after.name} switched from **{before_game.name}** to **{after_game.name}**!")
 
 
 # --- BACKGROUND TASKS ---
+@tasks.loop(minutes=5)
+async def update_leaderboards_periodically():
+    """Periodically saves playtime for active users to prevent data loss."""
+    now = datetime.datetime.now(datetime.UTC)
+    if not playing_start_times: return  # No one is playing, skip the log messages.
+
+    print(f"LOG: [{datetime.datetime.now()}] Running periodic leaderboard update...")
+    for user_id, info in list(playing_start_times.items()):
+        guild = bot.get_guild(info["guild_id"])
+        if not guild: continue
+        # Use get_member to ensure they are still in the server
+        member = guild.get_member(user_id)
+        if not member: continue
+
+        duration_to_log = (now - info["last_updated"]).total_seconds()
+
+        await update_leaderboard(member, duration_to_log)
+        await update_game_leaderboard(guild, info["game"], duration_to_log)
+
+        # IMPORTANT: Update the 'last_updated' timestamp to now
+        playing_start_times[user_id]["last_updated"] = now
+
+    save_data(PLAY_TIMES_FILE, playing_start_times)
+    print("LOG: Periodic leaderboard update complete.")
+
+
 @tasks.loop(minutes=1)
 async def check_milestones():
+    """Checks for and announces playtime milestones."""
     now = datetime.datetime.now(datetime.UTC)
     for user_id, info in list(playing_start_times.items()):
-        start_time = datetime.datetime.fromisoformat(info["start_time"])
-        minutes_played = int((now - start_time).total_seconds() // 60)
+        total_minutes_played = int((now - info["start_time"]).total_seconds() // 60)
 
         for milestone_minutes, message in milestone_messages.items():
-            if minutes_played >= milestone_minutes and milestone_minutes not in set(info["milestones_hit"]):
+            if total_minutes_played >= milestone_minutes and milestone_minutes not in info["milestones_hit"]:
                 guild = bot.get_guild(info["guild_id"])
                 if guild:
                     member = guild.get_member(user_id)
                     channel = guild.get_channel(info["channel_id"])
                     if member and channel:
-                        await channel.send(f"**{member.mention}** {message}")
+                        try:
+                            await channel.send(f"**{member.mention}** {message}")
+                            playing_start_times[user_id]["milestones_hit"].add(milestone_minutes)
+                        except discord.HTTPException as e:
+                            print(f"Error: Could not send milestone message: {e}")
 
-                info["milestones_hit"].append(milestone_minutes)
-                save_data(PLAY_TIMES_FILE, playing_start_times)
+    # Save milestones hit to file
+    if any(info["milestones_hit"] for info in playing_start_times.values()):
+        save_data(PLAY_TIMES_FILE, playing_start_times)
+
+
+@check_milestones.before_loop
+@update_leaderboards_periodically.before_loop
+async def before_tasks():
+    """Ensures the bot is ready before starting any background tasks."""
+    await bot.wait_until_ready()
 
 
 # --- COMMANDS ---
-@bot.command(name="leaderboard", help="Shows the server's gaming leaderboard for users.")
+@bot.command(name="leaderboard", aliases=["lb"], help="Shows the server's gaming leaderboard for users.")
 async def leaderboard(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in leaderboard_data or not leaderboard_data[guild_id_str]:
@@ -251,84 +332,77 @@ async def leaderboard(ctx):
         return
 
     sorted_users = sorted(leaderboard_data[guild_id_str].items(), key=lambda item: item[1], reverse=True)
-
     embed = discord.Embed(title=f"🏆 Top Gamers in {ctx.guild.name}", color=discord.Color.gold())
-
     description = ""
     for i, (user_id_str, total_seconds) in enumerate(sorted_users[:10], 1):
         member = ctx.guild.get_member(int(user_id_str))
         name = member.display_name if member else f"User ({user_id_str})"
         emoji = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else "🔹"
         description += f"{emoji} **{name}**: {format_duration(total_seconds)}\n"
-
     embed.description = description
     await ctx.send(embed=embed)
 
 
-# <-- NEW COMMAND ---
-@bot.command(name="topgames", help="Shows the most played games on the server.")
+@bot.command(name="topgames", aliases=["tg"], help="Shows the most played games on the server.")
 async def topgames(ctx):
     guild_id_str = str(ctx.guild.id)
     if guild_id_str not in game_leaderboard_data or not game_leaderboard_data[guild_id_str]:
         await ctx.send("No game leaderboard data has been recorded for this server yet!")
         return
 
-    # Sort games by playtime
     sorted_games = sorted(game_leaderboard_data[guild_id_str].items(), key=lambda item: item[1], reverse=True)
-
     embed = discord.Embed(title=f"🎮 Most Played Games in {ctx.guild.name}", color=discord.Color.orange())
-
     description = ""
     for i, (game_name, total_seconds) in enumerate(sorted_games[:10], 1):
         emoji = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else "🔹"
         description += f"{emoji} **{game_name}**: {format_duration(total_seconds)}\n"
-
     embed.description = description
     await ctx.send(embed=embed)
 
 
-# --- END OF NEW COMMAND -->
+@bot.command(name="checkchannel", help="Checks if the bot can find and use the announcement channel.")
+async def check_channel(ctx):
+    announcement_channel = get_announcement_channel(ctx.guild)
+    if announcement_channel:
+        await ctx.send(f"✅ Success! I found the channel: {announcement_channel.mention}")
+        try:
+            await announcement_channel.send(f"This is a test message from {ctx.author.mention}!")
+            await ctx.send("✅ I was also able to send a message to it.")
+        except discord.Forbidden:
+            await ctx.send(f"❌ **Error:** I found the channel, but I do not have permission to `Send Messages` in it.")
+    else:
+        await ctx.send(f"❌ **Error:** I could not find a channel named `{ANNOUNCEMENT_CHANNEL_NAME}`.")
 
 
-@bot.command(name="whoplays", help="Shows who is currently playing a specific game. Usage: !whoplays \"Game Name\"")
+@bot.command(name="whoplays", help="Shows who is currently playing a specific game.")
 async def whoplays(ctx, *, game_name: str):
     playing_now = []
     now = datetime.datetime.now(datetime.UTC)
     guild_id = ctx.guild.id
-
     for user_id, info in playing_start_times.items():
         if info["game"].lower() == game_name.lower() and info["guild_id"] == guild_id:
             member = ctx.guild.get_member(user_id)
             if member:
-                start_time = datetime.datetime.fromisoformat(info["start_time"])
-                duration = format_duration((now - start_time).total_seconds())
+                duration = format_duration((now - info["start_time"]).total_seconds())
                 playing_now.append(f"• **{member.display_name}** (for {duration})")
 
     if not playing_now:
         await ctx.send(f"No one is currently playing **{game_name}** in this server.")
         return
-
-    embed = discord.Embed(
-        title=f"Players currently in {game_name}",
-        description="\n".join(playing_now),
-        color=discord.Color.blue()
-    )
+    embed = discord.Embed(title=f"Players currently in {game_name}", description="\n".join(playing_now),
+                          color=discord.Color.blue())
     await ctx.send(embed=embed)
 
 
-@bot.command(name="addgamerole",
-             help="Links a game to a role for auto-assigning. Usage: !addgamerole \"Game Name\" @Role")
+@bot.command(name="addgamerole", help="Links a game to a role. Usage: !addgamerole \"Game Name\" @Role")
 @commands.has_permissions(manage_roles=True)
 async def add_game_role(ctx, game_name: str, role: discord.Role):
     guild_id_str = str(ctx.guild.id)
     game_name_lower = game_name.lower()
-
     if guild_id_str not in game_roles:
         game_roles[guild_id_str] = {}
-
     game_roles[guild_id_str][game_name_lower] = role.id
     save_data(GAME_ROLES_FILE, game_roles)
-
     await ctx.send(f"✅ Successfully linked the game **{game_name}** to the `{role.name}` role.")
 
 
@@ -346,13 +420,8 @@ async def main():
         print("ERROR: DISCORD_TOKEN not found in .env file.")
         return
 
-    setup_data_files()
-
     async with bot:
-        try:
-            await bot.start(TOKEN)
-        except (discord.HTTPException, discord.GatewayNotFound, discord.ConnectionClosed, OSError) as e:
-            print(f"🔄 Connection error: {e}. Bot will attempt to restart.")
+        await bot.start(TOKEN)
 
 
 if __name__ == "__main__":
