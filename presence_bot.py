@@ -415,9 +415,14 @@ async def add_game_role_error(ctx, error):
 # --- MAIN EXECUTION ---
 async def main():
     """Main function to start the bot."""
-    TOKEN = os.getenv("DISCORD_TOKEN")
+    TOKEN = os.getenv("DISCORD_TOKEN")  # Reads from system environment variables
+
     if not TOKEN:
-        print("ERROR: DISCORD_TOKEN not found in .env file.")
+        print("❌ ERROR: DISCORD_TOKEN not found in environment variables.")
+        print("👉 How to fix:")
+        print("1. Run this command BEFORE starting the bot:")
+        print("   export DISCORD_TOKEN='your_bot_token_here'")
+        print("2. Then start the bot in tmux as usual")
         return
 
     async with bot:
