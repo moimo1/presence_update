@@ -184,7 +184,6 @@ async def stop_tracking_activity(member):
     start_info = playing_start_times.pop(member.id)
     now = datetime.datetime.now(datetime.UTC)
 
-    # Log the final chunk of time since the last periodic update
     duration_since_last_update = (now - start_info["last_updated"]).total_seconds()
     await update_leaderboard(member, duration_since_last_update)
     await update_game_leaderboard(member.guild, start_info["game"], duration_since_last_update)
@@ -204,7 +203,6 @@ async def on_ready():
     print(f"✅ Bot is online as {bot.user}")
     print("-" * 20)
 
-    # Wait for the internal presence cache to be populated by the gateway.
     print("⏳ Waiting 10 seconds for presence cache to populate...")
     await asyncio.sleep(10)
     print("✅ Cache ready.")
@@ -212,7 +210,6 @@ async def on_ready():
     print("🚀 Performing initial presence scan for ongoing activities...")
     active_users_found = 0
     for guild in bot.guilds:
-        # fetch_members is more reliable than guild.members for this purpose.
         async for member in guild.fetch_members(limit=None):
             if member.bot:
                 continue
@@ -229,6 +226,7 @@ async def on_ready():
     # Start the background tasks
     check_milestones.start()
     update_leaderboards_periodically.start()
+    weekly_reset_and_announce.start()  # <--- NEW CODE
 
 
 @bot.event
@@ -237,7 +235,6 @@ async def on_presence_update(before, after):
 
     channel = get_announcement_channel(after.guild)
 
-    # Status change announcements (optional, can be commented out)
     if before.status != after.status and channel:
         if after.status == discord.Status.online and before.status == discord.Status.offline:
             await channel.send(f"🟢 {after.mention} just came online.")
@@ -247,16 +244,13 @@ async def on_presence_update(before, after):
     before_game = next((a for a in before.activities if a.type == discord.ActivityType.playing), None)
     after_game = next((a for a in after.activities if a.type == discord.ActivityType.playing), None)
 
-    # Case 1: Started playing a game
     if not before_game and after_game:
         await start_tracking_activity(after, after_game)
-    # Case 2: Stopped playing (or went offline while playing)
     elif (before_game and not after_game) or (before_game and after.status == discord.Status.offline):
         start_info, duration = await stop_tracking_activity(after)
         if channel and start_info:
             await channel.send(
                 f"⏹️ {after.name} stopped playing **{start_info['game']}** after {format_duration(duration)}.")
-    # Case 3: Switched games
     elif before_game and after_game and before_game.name != after_game.name:
         await stop_tracking_activity(after)
         await start_tracking_activity(after, after_game)
@@ -269,22 +263,19 @@ async def on_presence_update(before, after):
 async def update_leaderboards_periodically():
     """Periodically saves playtime for active users to prevent data loss."""
     now = datetime.datetime.now(datetime.UTC)
-    if not playing_start_times: return  # No one is playing, skip the log messages.
+    if not playing_start_times: return
 
     print(f"LOG: [{datetime.datetime.now()}] Running periodic leaderboard update...")
     for user_id, info in list(playing_start_times.items()):
         guild = bot.get_guild(info["guild_id"])
         if not guild: continue
-        # Use get_member to ensure they are still in the server
         member = guild.get_member(user_id)
         if not member: continue
 
         duration_to_log = (now - info["last_updated"]).total_seconds()
-
         await update_leaderboard(member, duration_to_log)
         await update_game_leaderboard(guild, info["game"], duration_to_log)
 
-        # IMPORTANT: Update the 'last_updated' timestamp to now
         playing_start_times[user_id]["last_updated"] = now
 
     save_data(PLAY_TIMES_FILE, playing_start_times)
@@ -311,13 +302,79 @@ async def check_milestones():
                         except discord.HTTPException as e:
                             print(f"Error: Could not send milestone message: {e}")
 
-    # Save milestones hit to file
     if any(info["milestones_hit"] for info in playing_start_times.values()):
         save_data(PLAY_TIMES_FILE, playing_start_times)
 
 
+# <--- NEW CODE: Weekly reset task ---
+@tasks.loop(hours=24)
+async def weekly_reset_and_announce():
+    """
+    Checks daily if it's the reset day (Monday). If so, announces winners
+    and resets leaderboards for the new week.
+    """
+    # weekday() returns 0 for Monday, 1 for Tuesday, etc.
+    if datetime.datetime.now(datetime.UTC).weekday() != 0:
+        return
+
+    print("--- RUNNING WEEKLY LEADERBOARD RESET ---")
+
+    for guild in bot.guilds:
+        print(f"Processing reset for guild: {guild.name} ({guild.id})")
+        guild_id_str = str(guild.id)
+        announcement_channel = get_announcement_channel(guild)
+
+        if not announcement_channel:
+            print(f"  -> Skipping guild {guild.name}, no announcement channel found.")
+            continue
+
+        top_gamer_text = "No one played this week! 😢"
+        if guild_id_str in leaderboard_data and leaderboard_data[guild_id_str]:
+            user_lb = leaderboard_data[guild_id_str]
+            top_user_id_str, top_user_seconds = sorted(user_lb.items(), key=lambda i: i[1], reverse=True)[0]
+            top_user = guild.get_member(int(top_user_id_str))
+            top_user_name = top_user.mention if top_user else f"User ({top_user_id_str})"
+            top_gamer_text = f"🏆 **Top Gamer of the Week**: {top_user_name} with **{format_duration(top_user_seconds)}**!"
+
+        top_game_text = "No specific games were tracked this week."
+        if guild_id_str in game_leaderboard_data and game_leaderboard_data[guild_id_str]:
+            game_lb = game_leaderboard_data[guild_id_str]
+            top_game_name, top_game_seconds = sorted(game_lb.items(), key=lambda i: i[1], reverse=True)[0]
+            top_game_text = f"🎮 **Most Played Game**: **{top_game_name}** with a total of **{format_duration(top_game_seconds)}**!"
+
+        embed = discord.Embed(
+            title="🎉 Weekly Gaming Report! 🎉",
+            description=f"Here's the summary of last week's gaming activity. The leaderboards have now been reset!",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Weekly Champion", value=top_gamer_text, inline=False)
+        embed.add_field(name="Top Game", value=top_game_text, inline=False)
+        embed.set_footer(text="A new week begins now. Good luck, gamers!")
+
+        try:
+            await announcement_channel.send(embed=embed)
+            print(f"  -> Announcement sent for {guild.name}.")
+        except discord.Forbidden:
+            print(f"  -> FAILED to send announcement for {guild.name} (Missing Permissions).")
+        except discord.HTTPException as e:
+            print(f"  -> FAILED to send announcement for {guild.name}: {e}")
+
+        if guild_id_str in leaderboard_data:
+            leaderboard_data[guild_id_str] = {}
+            print(f"  -> User leaderboard reset for {guild.name}.")
+        if guild_id_str in game_leaderboard_data:
+            game_leaderboard_data[guild_id_str] = {}
+            print(f"  -> Game leaderboard reset for {guild.name}.")
+
+    save_data(LEADERBOARD_FILE, leaderboard_data)
+    save_data(GAME_LEADERBOARD_FILE, game_leaderboard_data)
+    print("--- WEEKLY RESET COMPLETE. DATA SAVED. ---")
+
+
+# <--- MODIFIED: Added the new task to the before_loop decorator ---
 @check_milestones.before_loop
 @update_leaderboards_periodically.before_loop
+@weekly_reset_and_announce.before_loop
 async def before_tasks():
     """Ensures the bot is ready before starting any background tasks."""
     await bot.wait_until_ready()
@@ -415,7 +472,7 @@ async def add_game_role_error(ctx, error):
 # --- MAIN EXECUTION ---
 async def main():
     """Main function to start the bot."""
-    TOKEN = os.getenv("DISCORD_TOKEN")  # Reads from system environment variables
+    TOKEN = os.getenv("DISCORD_TOKEN")
 
     if not TOKEN:
         print("❌ ERROR: DISCORD_TOKEN not found in environment variables.")
