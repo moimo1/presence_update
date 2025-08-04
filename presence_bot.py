@@ -14,7 +14,10 @@ PLAY_TIMES_FILE = os.path.join(DATA_FOLDER, "play_times.json")
 LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "leaderboard.json")
 GAME_ROLES_FILE = os.path.join(DATA_FOLDER, "game_roles.json")
 GAME_LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "game_leaderboard.json")
-ANNOUNCEMENT_CHANNEL_NAME = "general"
+
+# --- MODIFIED: Separated channel names for different purposes ---
+WEEKLY_ANNOUNCEMENT_CHANNEL_NAME = "general"
+PRESENCE_CHANNEL_NAME = "presence-update"
 
 
 # --- DATA HELPER FUNCTIONS ---
@@ -94,9 +97,10 @@ milestone_messages = {
 
 
 # --- CORE HELPER FUNCTIONS ---
-def get_announcement_channel(guild):
-    """Finds the designated announcement channel by name."""
-    return discord.utils.get(guild.text_channels, name=ANNOUNCEMENT_CHANNEL_NAME)
+# MODIFIED: Renamed and generalized the function to find any channel by name
+def get_text_channel_by_name(guild, channel_name):
+    """Finds a text channel in a guild by its name."""
+    return discord.utils.get(guild.text_channels, name=channel_name)
 
 
 def format_duration(seconds):
@@ -158,7 +162,8 @@ async def handle_game_role(member, game_name, action="add"):
 async def start_tracking_activity(member, game):
     """Handles all logic for when a member starts a game."""
     if member.id in playing_start_times: return
-    channel = get_announcement_channel(member.guild)
+    # MODIFIED: Get the specific presence channel
+    channel = get_text_channel_by_name(member.guild, PRESENCE_CHANNEL_NAME)
     now = datetime.datetime.now(datetime.UTC)
 
     playing_start_times[member.id] = {
@@ -167,7 +172,7 @@ async def start_tracking_activity(member, game):
         "game": game.name,
         "milestones_hit": set(),
         "guild_id": member.guild.id,
-        "channel_id": channel.id if channel else None
+        "channel_id": channel.id if channel else None # Store the presence channel ID
     }
     save_data(PLAY_TIMES_FILE, playing_start_times)
     await handle_game_role(member, game.name, action="add")
@@ -223,17 +228,17 @@ async def on_ready():
     print(f"✅ Initial scan complete. Found and started tracking {active_users_found} active users.")
     print("-" * 20)
 
-    # Start the background tasks
     check_milestones.start()
     update_leaderboards_periodically.start()
-    weekly_reset_and_announce.start()  # <--- NEW CODE
+    weekly_reset_and_announce.start()
 
 
 @bot.event
 async def on_presence_update(before, after):
     if after.bot: return
 
-    channel = get_announcement_channel(after.guild)
+    # MODIFIED: Get the specific presence channel for all real-time updates
+    channel = get_text_channel_by_name(after.guild, PRESENCE_CHANNEL_NAME)
 
     if before.status != after.status and channel:
         if after.status == discord.Status.online and before.status == discord.Status.offline:
@@ -294,6 +299,7 @@ async def check_milestones():
                 guild = bot.get_guild(info["guild_id"])
                 if guild:
                     member = guild.get_member(user_id)
+                    # The channel_id stored is the presence channel, which is correct for milestones
                     channel = guild.get_channel(info["channel_id"])
                     if member and channel:
                         try:
@@ -306,46 +312,42 @@ async def check_milestones():
         save_data(PLAY_TIMES_FILE, playing_start_times)
 
 
-# --- BACKGROUND TASKS ---
 @tasks.loop(hours=24)
 async def weekly_reset_and_announce():
     """
     Checks daily if it's the reset day (Monday). If so, announces winners
     and resets leaderboards for the new week.
     """
-    # weekday() returns 0 for Monday, 1 for Tuesday, etc.
     if datetime.datetime.now(datetime.UTC).weekday() != 0:
-        return # It's not Monday, do nothing.
+        return
 
     print("--- RUNNING WEEKLY LEADERBOARD RESET ---")
 
     for guild in bot.guilds:
         print(f"Processing reset for guild: {guild.name} ({guild.id})")
         guild_id_str = str(guild.id)
-        announcement_channel = get_announcement_channel(guild)
+        # MODIFIED: Get the specific weekly announcement channel
+        announcement_channel = get_text_channel_by_name(guild, WEEKLY_ANNOUNCEMENT_CHANNEL_NAME)
 
         if not announcement_channel:
-            print(f"  -> Skipping guild {guild.name}, no announcement channel found.")
+            print(f"  -> Skipping guild {guild.name}, no '{WEEKLY_ANNOUNCEMENT_CHANNEL_NAME}' channel found.")
             continue
 
-        # --- MODIFIED: More detailed logic to get top 3 users ---
         user_lb = leaderboard_data.get(guild_id_str, {})
         sorted_users = sorted(user_lb.items(), key=lambda i: i[1], reverse=True)
 
-        # --- MODIFIED: More detailed logic to get the top game ---
         game_lb = game_leaderboard_data.get(guild_id_str, {})
         sorted_games = sorted(game_lb.items(), key=lambda i: i[1], reverse=True)
 
-        # --- NEW: Grand new embed design ---
         embed = discord.Embed(
             title="🏆 The Weekly Grind is Over! 🏆",
             description="The dust has settled on another epic week of gaming! A huge congratulations to this week's champions. **The leaderboards have now been wiped clean for a fresh start!**",
-            color=discord.Color.gold(), # Gold for the winners
+            color=discord.Color.gold(),
             timestamp=datetime.datetime.now(datetime.UTC)
         )
-        embed.set_thumbnail(url="https://www.google.com/url?sa=i&url=https%3A%2F%2Fpearlyarts.com%2Fproduct%2Fgold-trophy-clipart%2F&psig=AOvVaw3LatkSWJ2Yiipi9-X3wnBv&ust=1754371022095000&source=images&cd=vfe&opi=89978449&ved=0CBUQjRxqFwoTCKi5jr6z8I4DFQAAAAAdAAAAABAE")
+        # NEW: Fixed thumbnail with a direct image link
+        embed.set_thumbnail(url="https://i.imgur.com/rXf2z2i.png")
 
-        # --- Top Gamer Field ---
         if sorted_users:
             top_user_id_str, top_user_seconds = sorted_users[0]
             top_user = guild.get_member(int(top_user_id_str))
@@ -356,13 +358,8 @@ async def weekly_reset_and_announce():
                 inline=True
             )
         else:
-            embed.add_field(
-                name="👑 Weekly Gaming Champion",
-                value="*No one played this week!*",
-                inline=True
-            )
+            embed.add_field(name="👑 Weekly Gaming Champion", value="*No one played this week!*", inline=True)
 
-        # --- Top Game Field ---
         if sorted_games:
             top_game_name, top_game_seconds = sorted_games[0]
             embed.add_field(
@@ -371,29 +368,17 @@ async def weekly_reset_and_announce():
                 inline=True
             )
         else:
-             embed.add_field(
-                name="🎮 Most Dominant Game",
-                value="*No games were tracked!*",
-                inline=True
-            )
+            embed.add_field(name="🎮 Most Dominant Game", value="*No games were tracked!*", inline=True)
 
-        # --- NEW: Honorable Mentions Field ---
-        honorable_mentions = []
-        if len(sorted_users) > 1: # Check if there is at least a 2nd place
-             # Add a blank field for visual spacing before the honorable mentions
+        if len(sorted_users) > 1:
             embed.add_field(name='\u200b', value='\u200b', inline=False)
-
-            for i, (user_id_str, total_seconds) in enumerate(sorted_users[1:3], start=2): # Get 2nd and 3rd place
+            honorable_mentions = []
+            for i, (user_id_str, total_seconds) in enumerate(sorted_users[1:3], start=2):
                 member = guild.get_member(int(user_id_str))
                 name = member.display_name if member else f"User ({user_id_str})"
                 emoji = "🥈" if i == 2 else "🥉"
                 honorable_mentions.append(f"{emoji} **{name}**: `{format_duration(total_seconds)}`")
-
-            embed.add_field(
-                name="🏅 Hall of Fame",
-                value="\n".join(honorable_mentions),
-                inline=False
-            )
+            embed.add_field(name="🏅 Hall of Fame", value="\n".join(honorable_mentions), inline=False)
 
         embed.set_footer(text="A new week begins now. Good luck, everyone!")
 
@@ -405,7 +390,6 @@ async def weekly_reset_and_announce():
         except discord.HTTPException as e:
             print(f"  -> FAILED to send announcement for {guild.name}: {e}")
 
-        # --- Leaderboard Reset Logic (Unchanged) ---
         if guild_id_str in leaderboard_data:
             leaderboard_data[guild_id_str] = {}
             print(f"  -> User leaderboard reset for {guild.name}.")
@@ -463,18 +447,37 @@ async def topgames(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="checkchannel", help="Checks if the bot can find and use the announcement channel.")
-async def check_channel(ctx):
-    announcement_channel = get_announcement_channel(ctx.guild)
-    if announcement_channel:
-        await ctx.send(f"✅ Success! I found the channel: {announcement_channel.mention}")
-        try:
-            await announcement_channel.send(f"This is a test message from {ctx.author.mention}!")
-            await ctx.send("✅ I was also able to send a message to it.")
-        except discord.Forbidden:
-            await ctx.send(f"❌ **Error:** I found the channel, but I do not have permission to `Send Messages` in it.")
-    else:
-        await ctx.send(f"❌ **Error:** I could not find a channel named `{ANNOUNCEMENT_CHANNEL_NAME}`.")
+# NEW: Overhauled command to check both required channels.
+@bot.command(name="checkchannels", help="Checks if the bot can find and use the required channels.")
+async def check_channels(ctx):
+    """Checks the configuration of both required announcement channels."""
+    embed = discord.Embed(
+        title="⚙️ Bot Channel Configuration Check",
+        description="This checks if I can find and send messages in the required channels.",
+        color=discord.Color.blurple()
+    )
+
+    # Helper to check a single channel
+    async def check_single_channel(channel_name):
+        channel = get_text_channel_by_name(ctx.guild, channel_name)
+        if not channel:
+            return f"❌ **Not Found:** A channel named `{channel_name}` does not exist."
+
+        permissions = channel.permissions_for(ctx.guild.me)
+        if not permissions.send_messages or not permissions.embed_links:
+             return (f"✅ **Found:** {channel.mention}\n"
+                     f"❌ **Permissions Error:** I need `Send Messages` and `Embed Links` permissions in this channel.")
+
+        return f"✅ **OK:** Found {channel.mention} and have the correct permissions."
+
+    weekly_status = await check_single_channel(WEEKLY_ANNOUNCEMENT_CHANNEL_NAME)
+    presence_status = await check_single_channel(PRESENCE_CHANNEL_NAME)
+
+    embed.add_field(name=f"Weekly Announcements (`#{WEEKLY_ANNOUNCEMENT_CHANNEL_NAME}`)", value=weekly_status, inline=False)
+    embed.add_field(name=f"Real-time Activity (`#{PRESENCE_CHANNEL_NAME}`)", value=presence_status, inline=False)
+    embed.set_footer(text="If there are any errors, please create the channels or fix my permissions.")
+
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="whoplays", help="Shows who is currently playing a specific game.")
@@ -523,9 +526,8 @@ async def main():
     if not TOKEN:
         print("❌ ERROR: DISCORD_TOKEN not found in environment variables.")
         print("👉 How to fix:")
-        print("1. Run this command BEFORE starting the bot:")
-        print("   export DISCORD_TOKEN='your_bot_token_here'")
-        print("2. Then start the bot in tmux as usual")
+        print("1. Create a file named .env in the same directory as the bot.")
+        print("2. Add this line to the .env file: DISCORD_TOKEN='your_bot_token_here'")
         return
 
     async with bot:
@@ -536,4 +538,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot shutting down.")
+        print("\nBot shutting down.")
