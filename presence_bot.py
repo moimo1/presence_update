@@ -14,7 +14,7 @@ PLAY_TIMES_FILE = os.path.join(DATA_FOLDER, "play_times.json")
 LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "leaderboard.json")
 GAME_ROLES_FILE = os.path.join(DATA_FOLDER, "game_roles.json")
 GAME_LEADERBOARD_FILE = os.path.join(DATA_FOLDER, "game_leaderboard.json")
-ANNOUNCEMENT_CHANNEL_NAME = "presence-update"
+ANNOUNCEMENT_CHANNEL_NAME = "general"
 
 
 # --- DATA HELPER FUNCTIONS ---
@@ -306,7 +306,7 @@ async def check_milestones():
         save_data(PLAY_TIMES_FILE, playing_start_times)
 
 
-# <--- NEW CODE: Weekly reset task ---
+# --- BACKGROUND TASKS ---
 @tasks.loop(hours=24)
 async def weekly_reset_and_announce():
     """
@@ -315,7 +315,7 @@ async def weekly_reset_and_announce():
     """
     # weekday() returns 0 for Monday, 1 for Tuesday, etc.
     if datetime.datetime.now(datetime.UTC).weekday() != 0:
-        return
+        return # It's not Monday, do nothing.
 
     print("--- RUNNING WEEKLY LEADERBOARD RESET ---")
 
@@ -328,28 +328,74 @@ async def weekly_reset_and_announce():
             print(f"  -> Skipping guild {guild.name}, no announcement channel found.")
             continue
 
-        top_gamer_text = "No one played this week! 😢"
-        if guild_id_str in leaderboard_data and leaderboard_data[guild_id_str]:
-            user_lb = leaderboard_data[guild_id_str]
-            top_user_id_str, top_user_seconds = sorted(user_lb.items(), key=lambda i: i[1], reverse=True)[0]
-            top_user = guild.get_member(int(top_user_id_str))
-            top_user_name = top_user.mention if top_user else f"User ({top_user_id_str})"
-            top_gamer_text = f"🏆 **Top Gamer of the Week**: {top_user_name} with **{format_duration(top_user_seconds)}**!"
+        # --- MODIFIED: More detailed logic to get top 3 users ---
+        user_lb = leaderboard_data.get(guild_id_str, {})
+        sorted_users = sorted(user_lb.items(), key=lambda i: i[1], reverse=True)
 
-        top_game_text = "No specific games were tracked this week."
-        if guild_id_str in game_leaderboard_data and game_leaderboard_data[guild_id_str]:
-            game_lb = game_leaderboard_data[guild_id_str]
-            top_game_name, top_game_seconds = sorted(game_lb.items(), key=lambda i: i[1], reverse=True)[0]
-            top_game_text = f"🎮 **Most Played Game**: **{top_game_name}** with a total of **{format_duration(top_game_seconds)}**!"
+        # --- MODIFIED: More detailed logic to get the top game ---
+        game_lb = game_leaderboard_data.get(guild_id_str, {})
+        sorted_games = sorted(game_lb.items(), key=lambda i: i[1], reverse=True)
 
+        # --- NEW: Grand new embed design ---
         embed = discord.Embed(
-            title="🎉 Weekly Gaming Report! 🎉",
-            description=f"Here's the summary of last week's gaming activity. The leaderboards have now been reset!",
-            color=discord.Color.purple()
+            title="🏆 The Weekly Grind is Over! 🏆",
+            description="The dust has settled on another epic week of gaming! A huge congratulations to this week's champions. **The leaderboards have now been wiped clean for a fresh start!**",
+            color=discord.Color.gold(), # Gold for the winners
+            timestamp=datetime.datetime.now(datetime.UTC)
         )
-        embed.add_field(name="Weekly Champion", value=top_gamer_text, inline=False)
-        embed.add_field(name="Top Game", value=top_game_text, inline=False)
-        embed.set_footer(text="A new week begins now. Good luck, gamers!")
+        embed.set_thumbnail(url="https://www.google.com/url?sa=i&url=https%3A%2F%2Fpearlyarts.com%2Fproduct%2Fgold-trophy-clipart%2F&psig=AOvVaw3LatkSWJ2Yiipi9-X3wnBv&ust=1754371022095000&source=images&cd=vfe&opi=89978449&ved=0CBUQjRxqFwoTCKi5jr6z8I4DFQAAAAAdAAAAABAE")
+
+        # --- Top Gamer Field ---
+        if sorted_users:
+            top_user_id_str, top_user_seconds = sorted_users[0]
+            top_user = guild.get_member(int(top_user_id_str))
+            top_user_mention = top_user.mention if top_user else f"User ({top_user_id_str})"
+            embed.add_field(
+                name="👑 Weekly Gaming Champion",
+                value=f"{top_user_mention}\n**Time Played:** `{format_duration(top_user_seconds)}`",
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="👑 Weekly Gaming Champion",
+                value="*No one played this week!*",
+                inline=True
+            )
+
+        # --- Top Game Field ---
+        if sorted_games:
+            top_game_name, top_game_seconds = sorted_games[0]
+            embed.add_field(
+                name="🎮 Most Dominant Game",
+                value=f"**{top_game_name}**\n**Total Playtime:** `{format_duration(top_game_seconds)}`",
+                inline=True
+            )
+        else:
+             embed.add_field(
+                name="🎮 Most Dominant Game",
+                value="*No games were tracked!*",
+                inline=True
+            )
+
+        # --- NEW: Honorable Mentions Field ---
+        honorable_mentions = []
+        if len(sorted_users) > 1: # Check if there is at least a 2nd place
+             # Add a blank field for visual spacing before the honorable mentions
+            embed.add_field(name='\u200b', value='\u200b', inline=False)
+
+            for i, (user_id_str, total_seconds) in enumerate(sorted_users[1:3], start=2): # Get 2nd and 3rd place
+                member = guild.get_member(int(user_id_str))
+                name = member.display_name if member else f"User ({user_id_str})"
+                emoji = "🥈" if i == 2 else "🥉"
+                honorable_mentions.append(f"{emoji} **{name}**: `{format_duration(total_seconds)}`")
+
+            embed.add_field(
+                name="🏅 Hall of Fame",
+                value="\n".join(honorable_mentions),
+                inline=False
+            )
+
+        embed.set_footer(text="A new week begins now. Good luck, everyone!")
 
         try:
             await announcement_channel.send(embed=embed)
@@ -359,6 +405,7 @@ async def weekly_reset_and_announce():
         except discord.HTTPException as e:
             print(f"  -> FAILED to send announcement for {guild.name}: {e}")
 
+        # --- Leaderboard Reset Logic (Unchanged) ---
         if guild_id_str in leaderboard_data:
             leaderboard_data[guild_id_str] = {}
             print(f"  -> User leaderboard reset for {guild.name}.")
@@ -371,7 +418,6 @@ async def weekly_reset_and_announce():
     print("--- WEEKLY RESET COMPLETE. DATA SAVED. ---")
 
 
-# <--- MODIFIED: Added the new task to the before_loop decorator ---
 @check_milestones.before_loop
 @update_leaderboards_periodically.before_loop
 @weekly_reset_and_announce.before_loop
