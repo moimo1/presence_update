@@ -517,6 +517,7 @@ async def add_game_role(ctx, game_name: str, role: discord.Role):
 
 
 @add_game_role.error
+async def add_game_role_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need the 'Manage Roles' permission to use this command.")
 
