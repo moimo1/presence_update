@@ -517,9 +517,33 @@ async def add_game_role(ctx, game_name: str, role: discord.Role):
 
 
 @add_game_role.error
-async def add_game_role_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need the 'Manage Roles' permission to use this command.")
+
+
+@bot.command(name="reset", help="Resets all leaderboard stats. Requires 'boss' role.")
+async def reset_stats(ctx):
+    """Resets all leaderboard data for the server. Requires 'boss' role."""
+    # Check for 'boss' role (case-insensitive)
+    has_boss_role = any(role.name.lower() == "boss" for role in ctx.author.roles)
+
+    if not has_boss_role:
+        await ctx.send("❌ You do not have the required role ('boss') to use this command.")
+        return
+
+    guild_id_str = str(ctx.guild.id)
+    
+    # Reset User Leaderboard
+    if guild_id_str in leaderboard_data:
+        leaderboard_data[guild_id_str] = {}
+        save_data(LEADERBOARD_FILE, leaderboard_data)
+
+    # Reset Game Leaderboard
+    if guild_id_str in game_leaderboard_data:
+        game_leaderboard_data[guild_id_str] = {}
+        save_data(GAME_LEADERBOARD_FILE, game_leaderboard_data)
+
+    await ctx.send("⚠️ **SERVER WIPE** ⚠️\nAll leaderboard statistics for this server have been reset by the boss.")
 
 
 # --- KEEP_ALIVE SERVER ---
