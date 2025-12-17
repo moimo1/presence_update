@@ -5,6 +5,7 @@ import asyncio
 import os
 import json
 from dotenv import load_dotenv
+from aiohttp import web
 
 load_dotenv()
 
@@ -227,6 +228,9 @@ async def on_ready():
 
     print(f"✅ Initial scan complete. Found and started tracking {active_users_found} active users.")
     print("-" * 20)
+
+    # Start the keep-alive server
+    bot.loop.create_task(keep_alive())
 
     check_milestones.start()
     update_leaderboards_periodically.start()
@@ -516,6 +520,21 @@ async def add_game_role(ctx, game_name: str, role: discord.Role):
 async def add_game_role_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ You need the 'Manage Roles' permission to use this command.")
+
+
+# --- KEEP_ALIVE SERVER ---
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def keep_alive():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌍 Keep-alive web server started on port {port}")
 
 
 # --- MAIN EXECUTION ---
